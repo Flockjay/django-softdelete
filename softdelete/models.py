@@ -1,19 +1,22 @@
 from __future__ import unicode_literals
 
 import django
-
 from django.conf import settings
-from django.db.models import query
-from django.db import models, transaction
-from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ObjectDoesNotExist
+from django.db import models, transaction
+from django.db.models import OneToOneRel, query
+
 try:
     from django.contrib.contenttypes.fields import GenericForeignKey
 except ImportError:
     from django.contrib.contenttypes.generic import GenericForeignKey
+
+import logging
+
 from django.contrib.auth.models import Group, Permission
 from django.utils import timezone
-import logging
+
 from softdelete.signals import *
 
 try:
@@ -56,7 +59,8 @@ class SoftDeleteQuerySet(query.QuerySet):
         logging.debug("STARTING QUERYSET SOFT-DELETE: %s. %s", self, len(self))
         for obj in self:
             rs, c = SoftDeleteRecord.objects.get_or_create(changeset=cs or _determine_change_set(obj),
-                                                           content_type=ContentType.objects.get_for_model(obj),
+                                                           content_type=ContentType.objects.get_for_model(
+                                                               obj),
                                                            object_id=str(obj.pk))
             logging.debug(" -----  CALLING delete() on %s", obj)
             obj.delete(using, *args, **kwargs)
@@ -123,7 +127,7 @@ class SoftDeleteManager(models.Manager):
         return qs
 
     def get(self, *args, **kwargs):
-            return self._get_self_queryset().get(*args, **kwargs)
+        return self._get_self_queryset().get(*args, **kwargs)
 
     def filter(self, *args, **kwargs):
         qs = self._get_self_queryset().filter(*args, **kwargs)
@@ -143,7 +147,7 @@ class SoftDeleteObject(models.Model):
         abstract = True
         permissions = (
             ('can_undelete', 'Can undelete this object'),
-            )
+        )
 
     def __init__(self, *args, **kwargs):
         super(SoftDeleteObject, self).__init__(*args, **kwargs)
@@ -164,12 +168,7 @@ class SoftDeleteObject(models.Model):
     deleted = property(get_deleted, set_deleted)
 
     def _do_delete(self, changeset, related):
-        get_rel_name = getattr(related, 'get_accessor_name', getattr(related, 'get_attname', ''))
-
-        if not callable(get_rel_name):
-            return
-
-        rel = get_rel_name()
+        rel = related.get_accessor_name()
 
         # Sometimes there is nothing to delete
         if not hasattr(self, rel):
@@ -180,17 +179,23 @@ class SoftDeleteObject(models.Model):
                 getattr(self, rel).delete(changeset=changeset)
             else:
                 getattr(self, rel).all().delete(changeset=changeset)
-        except django.core.exceptions.FieldError as e:
-            raise e
         except:
             try:
-                getattr(self, rel).all().delete()
-            except:
-                try:
-                    getattr(self, rel).__class__.objects.all().delete(
-                        changeset=changeset)
-                except:
-                    getattr(self, rel).__class__.objects.all().delete()
+                if related.one_to_one:
+                    getattr(self, rel).delete()
+                else:
+                    getattr(self, rel).all().delete()
+            except Exception as e:
+                if getattr(settings, "SOFTDELETE_CASCADE_ALLOW_DELETE_ALL", True):
+                    # fallback to delete all objects in the related field's model class
+                    # to maintain previous behaviour (before setting was added)
+                    try:
+                        getattr(self, rel).__class__.objects.all().delete(
+                            changeset=changeset)
+                    except:
+                        getattr(self, rel).__class__.objects.all().delete()
+                else:
+                    raise e
 
     @transaction.atomic
     def hard_delete(self, *args, **kwargs):
@@ -220,7 +225,7 @@ class SoftDeleteObject(models.Model):
                 except:
                     pass
         else:
-            using = kwargs.get('using', settings.DATABASES['default'])
+            using = kwargs.get('using', 'default')
             models.signals.pre_delete.send(sender=self.__class__,
                                            instance=self,
                                            using=using)
@@ -238,15 +243,39 @@ class SoftDeleteObject(models.Model):
             all_related = [
                 f for f in self._meta.get_fields()
                 if (f.one_to_many or f.one_to_one)
-                   and (f.auto_created or hasattr(f, 'bulk_related_objects')) and not f.concrete
+                and f.auto_created and not f.concrete
             ]
 
+            all_generic_relations = [
+                f
+                for f in self._meta.get_fields()
+                if (f.one_to_many or f.one_to_one)
+                and hasattr(f, "reverse_related_fields")
+                and not f.concrete
+            ]
+
+            for generic_relation in all_generic_relations:
+                related_objects = generic_relation.bulk_related_objects(
+                    [self], using=using
+                )
+                for related_object in related_objects:
+                    related_object.delete()
+
             for x in all_related:
-                if hasattr(x, 'bulk_related_objects') or (x.on_delete.__name__ not in ['DO_NOTHING', 'SET_NULL']):
+                if x.on_delete.__name__ not in ['DO_NOTHING', 'SET_NULL']:
                     self._do_delete(cs, x)
-                elif x.on_delete.__name__ == 'SET_NULL':
-                    rel = x.get_accessor_name()
-                    getattr(self, rel).all().update(**{x.remote_field.name: None})
+                if x.on_delete.__name__ == 'SET_NULL':
+                    related_name = x.get_accessor_name()
+                    if isinstance(x, OneToOneRel):
+                        if getattr(self, related_name, None) is None:
+                            continue
+                        related = getattr(self, related_name)
+                        if isinstance(related, models.Model):
+                            setattr(related, x.remote_field.name, None)
+                            related.save(update_fields=[x.remote_field.name])
+                    else:
+                        getattr(self, related_name).all().update(
+                            **{x.remote_field.name: None})
             logging.debug("FINISHED SOFT DELETING RELATED %s", self)
             models.signals.post_delete.send(sender=self.__class__,
                                             instance=self,
@@ -280,18 +309,19 @@ class SoftDeleteObject(models.Model):
             else:
                 self.delete()
 
+
 class ChangeSet(models.Model):
     id = models.BigAutoField(
         auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
-    )    
+    )
     created_date = models.DateTimeField(default=timezone.now)
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     object_id = models.CharField(max_length=100)
     record = GenericForeignKey('content_type', 'object_id')
 
     class Meta:
-        index_together = [
-            ("content_type", "object_id"),
+        indexes = [
+            models.Index(fields=["content_type", "object_id"]),
         ]
 
     def get_content(self):
@@ -315,10 +345,11 @@ class ChangeSet(models.Model):
 
     content = property(get_content, set_content)
 
+
 class SoftDeleteRecord(models.Model):
     id = models.BigAutoField(
         auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
-    )    
+    )
     changeset = models.ForeignKey(
         ChangeSet,
         related_name='soft_delete_records',
@@ -331,8 +362,8 @@ class SoftDeleteRecord(models.Model):
 
     class Meta:
         unique_together = (('changeset', 'content_type', 'object_id'),)
-        index_together = [
-            ("content_type", "object_id"),
+        indexes = [
+            models.Index(fields=["content_type", "object_id"]),
         ]
 
     def get_content(self):
