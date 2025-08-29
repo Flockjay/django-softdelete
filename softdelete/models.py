@@ -62,8 +62,7 @@ class SoftDeleteQuerySet(query.QuerySet):
         logging.debug("STARTING QUERYSET SOFT-DELETE: %s. %s", self, len(self))
         for obj in self:
             rs, c = SoftDeleteRecord.objects.get_or_create(changeset=cs or _determine_change_set(obj),
-                                                           content_type=ContentType.objects.get_for_model(
-                                                               obj),
+                                                           content_type=ContentType.objects.get_for_model(obj),
                                                            object_id=str(obj.pk))
             logging.debug(" -----  CALLING delete() on %s", obj)
             obj.delete(using, *args, **kwargs)
@@ -150,7 +149,7 @@ class SoftDeleteObject(models.Model):
         abstract = True
         permissions = (
             ('can_undelete', 'Can undelete this object'),
-        )
+            )
 
     def __init__(self, *args, **kwargs):
         super(SoftDeleteObject, self).__init__(*args, **kwargs)
@@ -246,7 +245,7 @@ class SoftDeleteObject(models.Model):
             all_related = [
                 f for f in self._meta.get_fields()
                 if (f.one_to_many or f.one_to_one)
-                and f.auto_created and not f.concrete
+                    and f.auto_created and not f.concrete
             ]
             
             all_generic_relations = [
