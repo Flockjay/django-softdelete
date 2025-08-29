@@ -1,0 +1,7 @@
+/home/deus/workspace/flockjay/django-softdelete/.devenv/flake.json
+/home/deus/workspace/flockjay/django-softdelete/.devenv.flake.nix
+/home/deus/workspace/flockjay/django-softdelete/.env
+/home/deus/workspace/flockjay/django-softdelete/devenv.local.nix
+/home/deus/workspace/flockjay/django-softdelete/devenv.lock
+/home/deus/workspace/flockjay/django-softdelete/devenv.nix
+/home/deus/workspace/flockjay/django-softdelete/devenv.yaml
