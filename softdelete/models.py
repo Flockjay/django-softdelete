@@ -2,9 +2,6 @@ from __future__ import unicode_literals
 
 import django
 from django.conf import settings
-from django.db.models import query, OneToOneRel
-from django.db import models, transaction
-from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models, transaction
@@ -62,7 +59,8 @@ class SoftDeleteQuerySet(query.QuerySet):
         logging.debug("STARTING QUERYSET SOFT-DELETE: %s. %s", self, len(self))
         for obj in self:
             rs, c = SoftDeleteRecord.objects.get_or_create(changeset=cs or _determine_change_set(obj),
-                                                           content_type=ContentType.objects.get_for_model(obj),
+                                                           content_type=ContentType.objects.get_for_model(
+                                                               obj),
                                                            object_id=str(obj.pk))
             logging.debug(" -----  CALLING delete() on %s", obj)
             obj.delete(using, *args, **kwargs)
@@ -149,7 +147,7 @@ class SoftDeleteObject(models.Model):
         abstract = True
         permissions = (
             ('can_undelete', 'Can undelete this object'),
-            )
+        )
 
     def __init__(self, *args, **kwargs):
         super(SoftDeleteObject, self).__init__(*args, **kwargs)
@@ -245,23 +243,8 @@ class SoftDeleteObject(models.Model):
             all_related = [
                 f for f in self._meta.get_fields()
                 if (f.one_to_many or f.one_to_one)
-                    and f.auto_created and not f.concrete
+                and f.auto_created and not f.concrete
             ]
-            
-            all_generic_relations = [
-                f
-                for f in self._meta.get_fields()
-                if (f.one_to_many or f.one_to_one)
-                and hasattr(f, "reverse_related_fields")
-                and not f.concrete
-            ]
-
-            for generic_relation in all_generic_relations:
-                related_objects = generic_relation.bulk_related_objects(
-                    [self], using=using
-                )
-                for related_object in related_objects:
-                    related_object.delete()
 
             all_generic_relations = [
                 f
@@ -291,7 +274,8 @@ class SoftDeleteObject(models.Model):
                             setattr(related, x.remote_field.name, None)
                             related.save(update_fields=[x.remote_field.name])
                     else:
-                        getattr(self, related_name).all().update(**{x.remote_field.name: None})
+                        getattr(self, related_name).all().update(
+                            **{x.remote_field.name: None})
             logging.debug("FINISHED SOFT DELETING RELATED %s", self)
             models.signals.post_delete.send(sender=self.__class__,
                                             instance=self,
